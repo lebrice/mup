@@ -32,11 +32,14 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from typing import Any
+from pathlib import Path
 
 try:
     from apex import amp
 except:
     print("Failed to import apex. You can still train with --precision {float|double}.")
+    amp: Any = None
 
 from mup.coord_check import get_coord_data, plot_coord_data
 from mup import MuAdam, MuSGD, get_shapes, make_base_shapes, set_base_shapes
@@ -82,16 +85,16 @@ def batchify(data, bsz, device):
     return data.to(device)
 
 
-def setprec(t, precision):
+def set_precision(model: nn.Module, precision: str):
     if precision == "half":
         # do nothing since this is handled by AMP
-        return t
+        return model
     elif precision == "float":
-        return t.float()
+        return model.float()
     elif precision == "double":
-        return t.double()
+        return model.double()
     else:
-        raise ValueError(f"invalid precision string {args.precision}")
+        raise ValueError(f"invalid precision string {precision}")
 
 
 def coord_check(
@@ -119,7 +122,7 @@ def coord_check(
                 decoder_var=args.init_var,
                 standparam=standparam,
             ).to(args.device)
-            model = setprec(model, args.precision)
+            model = set_precision(model, args.precision)
             if standparam:
                 set_base_shapes(model, None)
             else:
@@ -233,13 +236,13 @@ class Args:
     log_interval: int = field(default=200, metavar="N")
     """report interval"""
 
-    save_dir: str | None = None
+    save_dir: Path | None = None
     """path to save the final model"""
 
-    resume_dir: str | None = None
+    resume_dir: Path | None = None
     """path to resume training"""
 
-    log_dir: str = "."
+    log_dir: Path = Path(".")
     """path to save logs"""
 
     coord_check: bool = False
@@ -335,8 +338,10 @@ def main():
         start_time = time.time()
         ntokens = len(corpus.dictionary)
         first_loss = None
-        for batch, i in enumerate(range(0, train_data.size(0) - 1, args.bptt)):
-            data, targets = get_batch(train_data, i, args.bptt)
+        for batch_index, batch_start_index in enumerate(
+            range(0, train_data.size(0) - 1, args.bptt)
+        ):
+            data, targets = get_batch(train_data, batch_start_index, args.bptt)
             # Starting each batch, we detach the hidden state from how it was previously produced.
             # If we didn't, the model would try backpropagating all the way to start of the dataset.
 
@@ -355,29 +360,33 @@ def main():
             if args.clip > 0:
                 # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
                 if args.precision == "half":
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.clip)
+                    torch.nn.utils.clip_grad.clip_grad_norm_(
+                        amp.master_params(optimizer), args.clip
+                    )
                 else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+                    torch.nn.utils.clip_grad.clip_grad_norm_(model.parameters(), args.clip)
 
             optimizer.step()
 
             total_loss += loss.item()
             epoch_loss += len(data) * loss.item()
 
-            if batch % args.log_interval == 0 and batch > 0:
+            if batch_index % args.log_interval == 0 and batch_index > 0:
                 cur_loss = total_loss / args.log_interval
                 elapsed = time.time() - start_time
                 print(
-                    "| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.5f} | ms/batch {:5.2f} | "
-                    "loss {:5.2f} | ppl {:8.2f}".format(
-                        epoch,
-                        batch,
-                        len(train_data) // args.bptt,
-                        lr,
-                        elapsed * 1000 / args.log_interval,
-                        cur_loss,
-                        np.exp(cur_loss),
+                    "| "
+                    + " | ".join(
+                        [
+                            f"epoch {epoch:3d}",
+                            f"{batch_index:5d}/{len(train_data) // args.bptt:5d} batches",
+                            f"lr {lr:02.5f}",
+                            f"ms/batch {elapsed * 1000 / args.log_interval:5.2f}",
+                            f"loss {cur_loss:5.2f}",
+                            f"ppl {np.exp(cur_loss):8.2f}",
+                        ]
                     )
+                    + " |"
                 )
                 wandb.log(
                     dict(
@@ -424,9 +433,7 @@ def main():
             plotdir=plotdir,
             legend=False,
         )
-        import sys
-
-        sys.exit()
+        return
 
     model = mdl.TransformerModel(
         args,
@@ -464,9 +471,7 @@ def main():
         )
         make_base_shapes(base_shapes, delta_shapes, savefile=args.save_base_shapes)
         print("done and exit")
-        import sys
-
-        sys.exit()
+        return
     if args.load_base_shapes:
         print(f"loading base shapes from {args.load_base_shapes}")
         set_base_shapes(model, args.load_base_shapes)
@@ -477,7 +482,7 @@ def main():
         print("done")
 
     model = model.to(device)
-    model = setprec(model, args.precision)
+    model = set_precision(model, args.precision)
 
     criterion = nn.NLLLoss()
 
@@ -507,8 +512,8 @@ def main():
 
     logs = []
     start_epoch = 0
-    if args.resume_dir and os.path.exists(os.path.join(args.resume_dir, "checkpoint_last.pt")):
-        checkpoint = torch.load(os.path.join(args.resume_dir, "checkpoint_last.pt"))
+    if args.resume_dir and (args.resume_dir / "checkpoint_last.pt").exists():
+        checkpoint = torch.load(args.resume_dir / "checkpoint_last.pt")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         if args.precision == "half":
@@ -547,7 +552,7 @@ def main():
                     }
                     if args.precision == "half":
                         checkpoint["amp"] = (amp.state_dict(),)
-                    with open(os.path.join(args.save_dir, "checkpoint_best.pt"), "wb") as f:
+                    with open(args.save_dir / "checkpoint_best.pt", "wb") as f:
                         torch.save(checkpoint, f)
                     best_val_loss = val_loss
                 else:
@@ -560,7 +565,7 @@ def main():
                     }
                     if args.precision == "half":
                         checkpoint["amp"] = amp.state_dict()
-                with open(os.path.join(args.save_dir, "checkpoint_last.pt"), "wb") as f:
+                with open(args.save_dir / "checkpoint_last.pt", "wb") as f:
                     torch.save(checkpoint, f)
 
     except KeyboardInterrupt:
@@ -569,7 +574,7 @@ def main():
 
     # Load the best saved model.
     if args.save_dir is not None:
-        with open(os.path.join(args.save_dir, "checkpoint_best.pt"), "rb") as f:
+        with open(args.save_dir / "checkpoint_best.pt", "rb") as f:
             checkpoint = torch.load(f)
             model.load_state_dict(checkpoint["model"])
             optimizer.load_state_dict(checkpoint["optimizer"])
@@ -579,17 +584,15 @@ def main():
         test_loss = evaluate(test_data)
         print("=" * 89)
         print(
-            "| End of training | test loss {:5.2f} | test ppl {:8.2f}".format(
-                test_loss, np.exp(test_loss)
-            )
+            f"| End of training | test loss {test_loss:5.2f} | test ppl {np.exp(test_loss):8.2f}"
         )
         print("=" * 89)
         wandb.log({"test_loss": test_loss, "test_ppl": np.exp(test_loss)})
         logs.append(dict(epoch="-1", test_loss=test_loss))
-
-    with open(os.path.join(os.path.expanduser(args.log_dir), "logs.tsv"), "w") as f:
+    logs_tsv_file = (args.log_dir / "logs.tsv").expanduser()
+    with open(logs_tsv_file, "w") as f:
         logdf = pd.DataFrame(logs)
-        print(os.path.join(os.path.expanduser(args.log_dir), "logs.tsv"))
+        print(logs_tsv_file)
         f.write(logdf.to_csv(sep="\t", float_format="%.4f"))
 
     from orion.client import report_objective
