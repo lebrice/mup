@@ -374,7 +374,7 @@ def main():
             if batch_index % args.log_interval == 0 and batch_index > 0:
                 cur_loss = total_loss / args.log_interval
                 elapsed = time.time() - start_time
-                print(
+                message = (
                     "| "
                     + " | ".join(
                         [
@@ -388,6 +388,7 @@ def main():
                     )
                     + " |"
                 )
+                print(message)
                 wandb.log(
                     dict(
                         epoch=epoch,
