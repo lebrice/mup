@@ -581,15 +581,13 @@ def main():
             optimizer.load_state_dict(checkpoint["optimizer"])
             if args.precision == "half":
                 amp.load_state_dict(checkpoint["amp"][0])
-        # Run on test data.
-        test_loss = evaluate(test_data)
-        print("=" * 89)
-        print(
-            f"| End of training | test loss {test_loss:5.2f} | test ppl {np.exp(test_loss):8.2f}"
-        )
-        print("=" * 89)
-        wandb.log({"test_loss": test_loss, "test_ppl": np.exp(test_loss)})
-        logs.append(dict(epoch="-1", test_loss=test_loss))
+    # Run on test data.
+    test_loss = evaluate(test_data)
+    print("=" * 89)
+    print(f"| End of training | test loss {test_loss:5.2f} | test ppl {np.exp(test_loss):8.2f}")
+    print("=" * 89)
+    wandb.log({"test_loss": test_loss, "test_ppl": np.exp(test_loss)})
+    logs.append(dict(epoch="-1", test_loss=test_loss))
     logs_tsv_file = (args.log_dir / "logs.tsv").expanduser()
     with open(logs_tsv_file, "w") as f:
         logdf = pd.DataFrame(logs)
